@@ -358,7 +358,7 @@
         <div class="metric-wrap">
           <span class="hud-label">Coins</span>
           <div class="metric" id="coinText">0 / 150</div>
-          <div class="mini-note" id="coinSubtext">100 coins unlocks dawn.</div>
+          <div class="mini-note" id="coinSubtext">50 coins unlock dawn.</div>
         </div>
       </div>
       <div class="meter" aria-hidden="true">
@@ -433,8 +433,8 @@
       const GEN = {
         worldLength: 13000,
         platformCount: 66,
-        minPlatW: 120,
-        maxPlatW: 330,
+        minPlatW: 175,
+        maxPlatW: 460,
         minY: 210,
         maxY: 670,
         pathDxMin: 70,
@@ -445,6 +445,7 @@
         blueSnails: 6,
         redSnails: 5
       };
+      const DAWN_COINS = 50;
 
       const COLORS = {
         eveningTop: [255, 139, 175],
@@ -506,7 +507,10 @@
           squash: 0,
           stretch: 0,
           trailCooldown: 0,
-          trail: []
+          trail: [],
+          prevX: 0,
+          prevY: 0,
+          prevVy: 0
         },
         input: {
           left: false,
@@ -515,13 +519,11 @@
           wantRestartNew: false
         },
         touch: {
-          activeId: null,
-          startX: 0,
-          startY: 0,
-          x: 0,
-          y: 0,
-          startTime: 0,
-          jumpArmed: false
+          leftId: null,
+          leftStartX: 0,
+          leftX: 0,
+          rightId: null,
+          rightStartY: 0
         }
       };
 
@@ -602,7 +604,7 @@
         let y = randRange(rng, 470, 560);
 
         for (let i = 0; i < GEN.platformCount; i += 1) {
-          const minW = i === 0 ? 400 : GEN.minPlatW;
+          const minW = i === 0 ? 560 : GEN.minPlatW;
           const w = randRange(rng, minW, Math.max(minW, GEN.maxPlatW));
           platforms.push({
             x,
@@ -717,11 +719,14 @@
               y: p.y - size.h,
               w: size.w,
               h: size.h,
+              baseH: size.h,
               vx: (rng() > 0.5 ? 1 : -1) * size.speed,
               minX: p.x + 8,
               maxX: p.x + p.w - size.w - 8,
               color,
-              phase: randRange(rng, 0, Math.PI * 2)
+              phase: randRange(rng, 0, Math.PI * 2),
+              alive: true,
+              flattenT: 0
             };
 
             if (snail.x < 500) {
@@ -802,6 +807,9 @@
         p.stretch = 0;
         p.trailCooldown = 0;
         p.trail.length = 0;
+        p.prevX = p.x;
+        p.prevY = p.y;
+        p.prevVy = 0;
       }
 
       function resetRun(options = {}) {
@@ -825,6 +833,8 @@
         game.input.right = false;
         game.input.wantRestartNew = false;
         game.input.wantRestartSame = false;
+        game.touch.leftId = null;
+        game.touch.rightId = null;
 
         buildLevel(sameSeed ? game.seed : seedNow());
         resetPlayer();
@@ -908,7 +918,7 @@
               <p><span class="accent">You reached the end gate.</span> Replay this seed to optimize the route, or swipe down for a new world.</p>
               <div class="overlay-meta">
                 <div class="overlay-chip"><strong>Coins collected</strong><br>${game.collectedCoins} / 150</div>
-                <div class="overlay-chip"><strong>Sky state</strong><br>${game.collectedCoins >= 100 ? "Morning bloom" : "Evening glow"}</div>
+                <div class="overlay-chip"><strong>Sky state</strong><br>${game.collectedCoins >= DAWN_COINS ? "Morning bloom" : "Evening glow"}</div>
                 <div class="overlay-chip"><strong>Seed</strong><br>${formatSeed(game.seed)}</div>
               </div>
               <div class="overlay-actions">
@@ -942,10 +952,10 @@
       }
 
       function updateHUD() {
-        const progress = clamp(game.collectedCoins / GEN.coinCount, 0, 1);
-        const subtext = game.collectedCoins >= 100
+        const progress = clamp(game.collectedCoins / DAWN_COINS, 0, 1);
+        const subtext = game.collectedCoins >= DAWN_COINS
           ? "Dawn unlocked."
-          : `${Math.max(0, 100 - game.collectedCoins)} to dawn`;
+          : `${Math.max(0, DAWN_COINS - game.collectedCoins)} to dawn`;
         const nextKey = `${game.collectedCoins}|${subtext}|${progress.toFixed(2)}`;
         if (nextKey === hudStateKey) {
           return;
@@ -955,7 +965,7 @@
         coinText.textContent = `${game.collectedCoins} / ${GEN.coinCount}`;
         coinSubtext.textContent = subtext;
         coinMeterFill.style.width = `${(progress * 100).toFixed(2)}%`;
-        coinPanel.classList.toggle("goal-reached", game.collectedCoins >= 100);
+        coinPanel.classList.toggle("goal-reached", game.collectedCoins >= DAWN_COINS);
       }
 
       function triggerTierPulse(label) {
@@ -964,6 +974,170 @@
 
       function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
         return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+      }
+
+      function distancePointToSegment(px, py, ax, ay, bx, by) {
+        const vx = bx - ax;
+        const vy = by - ay;
+        const wx = px - ax;
+        const wy = py - ay;
+        const lenSq = vx * vx + vy * vy;
+        if (lenSq <= 1e-6) {
+          return Math.hypot(px - ax, py - ay);
+        }
+        const t = clamp((wx * vx + wy * vy) / lenSq, 0, 1);
+        const cx = ax + vx * t;
+        const cy = ay + vy * t;
+        return Math.hypot(px - cx, py - cy);
+      }
+
+      function circleVsCapsule(cx, cy, cr, ax, ay, bx, by, rr) {
+        return distancePointToSegment(cx, cy, ax, ay, bx, by) <= cr + rr;
+      }
+
+      function getPlayerPose(p) {
+        const runStrength = clamp(Math.abs(p.vx) / PLAYER.runSpeeds.fast, 0, 1);
+        const phaseSpeed = Math.abs(p.vx) > 8 ? (8 + runStrength * 6) : 0;
+        const phase = (game.elapsed * phaseSpeed) % (Math.PI * 2);
+        const f = p.face || 1;
+
+        return {
+          x: p.x,
+          y: p.y,
+          w: p.w,
+          h: p.h,
+          f,
+          runStrength,
+          phase,
+          bounce: Math.sin(phase * 2) * runStrength * 1.4
+        };
+      }
+
+      function getPlayerCollisionPrimitives(pose) {
+        const { x, y, w, h, f, runStrength, phase, bounce } = pose;
+        const stride = (0.14 + runStrength * 0.16) * Math.sin(phase);
+        const armStride = (0.1 + runStrength * 0.11) * Math.sin(phase + Math.PI);
+        const torsoTilt = (runStrength > 0.02 ? 0.16 : 0.06) * f * runStrength;
+
+        const hipX = x + w * 0.5;
+        const hipY = y + h * 0.63 + bounce;
+        const chestX = x + w * 0.51 + torsoTilt * w;
+        const chestY = y + h * 0.41 + bounce;
+        const neckX = x + w * 0.53 + torsoTilt * w * 1.2;
+        const neckY = y + h * 0.25 + bounce;
+        const headX = x + w * 0.54 + f * w * 0.03 + torsoTilt * w;
+        const headY = y + h * 0.14 + bounce;
+
+        const legLen = h * 0.29;
+        const kneeLift = h * 0.06;
+        const lFootX = hipX - w * 0.13 + stride * w * 0.85;
+        const rFootX = hipX + w * 0.13 - stride * w * 0.85;
+        const lFootY = y + h * 0.95 - Math.max(0, stride) * kneeLift;
+        const rFootY = y + h * 0.95 - Math.max(0, -stride) * kneeLift;
+
+        const shoulderX = x + w * 0.51 + torsoTilt * w * 0.8;
+        const shoulderY = y + h * 0.35 + bounce;
+        const armLen = h * 0.24;
+        const lHandX = shoulderX - w * 0.16 + armStride * w * 0.8;
+        const rHandX = shoulderX + w * 0.16 - armStride * w * 0.8;
+        const lHandY = shoulderY + armLen * (0.8 + Math.max(0, armStride));
+        const rHandY = shoulderY + armLen * (0.8 + Math.max(0, -armStride));
+
+        return {
+          circles: [
+            { x: headX, y: headY, r: w * 0.17 },
+            { x: neckX, y: neckY, r: w * 0.12 },
+            { x: chestX, y: chestY, r: w * 0.23 },
+            { x: hipX, y: hipY, r: w * 0.2 }
+          ],
+          capsules: [
+            { ax: chestX, ay: chestY, bx: hipX, by: hipY, r: w * 0.17 },
+            { ax: hipX - w * 0.07, ay: hipY - 1, bx: lFootX, by: lFootY, r: w * 0.085 },
+            { ax: hipX + w * 0.07, ay: hipY - 1, bx: rFootX, by: rFootY, r: w * 0.085 },
+            { ax: shoulderX - w * 0.08, ay: shoulderY, bx: lHandX, by: lHandY, r: w * 0.068 },
+            { ax: shoulderX + w * 0.08, ay: shoulderY, bx: rHandX, by: rHandY, r: w * 0.068 }
+          ]
+        };
+      }
+
+      function snailCollisionPrimitives(s) {
+        const shellY = s.y + s.h * 0.48 + (s.alive ? Math.sin(s.phase) * 1.5 : 0);
+        return {
+          circles: [
+            { x: s.x + s.w * 0.58, y: shellY, r: s.h * 0.32 },
+            { x: s.x + s.w * 0.22, y: s.y + s.h * 0.74, r: s.h * 0.16 }
+          ],
+          capsules: [
+            { ax: s.x + s.w * 0.14, ay: s.y + s.h * 0.69, bx: s.x + s.w * 0.86, by: s.y + s.h * 0.69, r: s.h * 0.2 }
+          ]
+        };
+      }
+
+      function playerHitsSnail(p, s) {
+        const pose = getPlayerPose(p);
+        const pParts = getPlayerCollisionPrimitives(pose);
+        const sParts = snailCollisionPrimitives(s);
+
+        for (const pc of pParts.circles) {
+          for (const sc of sParts.circles) {
+            if (Math.hypot(pc.x - sc.x, pc.y - sc.y) <= pc.r + sc.r) {
+              return true;
+            }
+          }
+          for (const cap of sParts.capsules) {
+            if (circleVsCapsule(pc.x, pc.y, pc.r, cap.ax, cap.ay, cap.bx, cap.by, cap.r)) {
+              return true;
+            }
+          }
+        }
+
+        for (const pcap of pParts.capsules) {
+          for (const sc of sParts.circles) {
+            if (circleVsCapsule(sc.x, sc.y, sc.r, pcap.ax, pcap.ay, pcap.bx, pcap.by, pcap.r)) {
+              return true;
+            }
+          }
+          for (const scap of sParts.capsules) {
+            const samples = [
+              [pcap.ax, pcap.ay],
+              [pcap.bx, pcap.by],
+              [(pcap.ax + pcap.bx) * 0.5, (pcap.ay + pcap.by) * 0.5]
+            ];
+            for (const [sx, sy] of samples) {
+              if (distancePointToSegment(sx, sy, scap.ax, scap.ay, scap.bx, scap.by) <= pcap.r + scap.r) {
+                return true;
+              }
+            }
+          }
+        }
+
+        return false;
+      }
+
+      function playerHitsRect(p, rx, ry, rw, rh) {
+        const pose = getPlayerPose(p);
+        const parts = getPlayerCollisionPrimitives(pose);
+        for (const c of parts.circles) {
+          const nx = clamp(c.x, rx, rx + rw);
+          const ny = clamp(c.y, ry, ry + rh);
+          if (Math.hypot(c.x - nx, c.y - ny) <= c.r) {
+            return true;
+          }
+        }
+        for (const cap of parts.capsules) {
+          const samples = 7;
+          for (let i = 0; i <= samples; i += 1) {
+            const t = i / samples;
+            const sx = lerp(cap.ax, cap.bx, t);
+            const sy = lerp(cap.ay, cap.by, t);
+            const nx = clamp(sx, rx, rx + rw);
+            const ny = clamp(sy, ry, ry + rh);
+            if (Math.hypot(sx - nx, sy - ny) <= cap.r) {
+              return true;
+            }
+          }
+        }
+        return false;
       }
 
       function burstCoin(x, y) {
@@ -997,7 +1171,7 @@
             life: randRange(Math.random, 0.3, 0.6),
             age: 0,
             r: randRange(Math.random, 3.5, 7),
-            color: game.collectedCoins >= 100 ? "183, 222, 255" : "255, 160, 199"
+            color: game.collectedCoins >= DAWN_COINS ? "183, 222, 255" : "255, 160, 199"
           });
         }
       }
@@ -1050,7 +1224,19 @@
 
       function updateSnails(dt) {
         const all = game.blueSnails.concat(game.redSnails);
-        for (const s of all) {
+        for (let i = all.length - 1; i >= 0; i -= 1) {
+          const s = all[i];
+          if (!s.alive) {
+            s.flattenT -= dt;
+            if (s.flattenT <= 0) {
+              const list = s.color === "blue" ? game.blueSnails : game.redSnails;
+              const idx = list.indexOf(s);
+              if (idx >= 0) {
+                list.splice(idx, 1);
+              }
+            }
+            continue;
+          }
           s.phase += dt * 5.2;
           s.x += s.vx * dt;
           if (s.x <= s.minX) {
@@ -1128,7 +1314,11 @@
         const p = game.player;
         const prevX = p.x;
         const prevY = p.y;
+        const prevVy = p.vy;
         const wasOnGround = p.onGround;
+        p.prevX = prevX;
+        p.prevY = prevY;
+        p.prevVy = prevVy;
 
         const speedInfo = currentRunSpeed();
         if (game.runTier !== speedInfo.tier) {
@@ -1280,7 +1470,7 @@
             coin.touchedAt = game.elapsed;
             game.collectedCoins += 1;
             burstCoin(coin.x, coin.y);
-            if (game.collectedCoins === 100) {
+            if (game.collectedCoins === DAWN_COINS) {
               burstImpact(coin.x, coin.y, "goal");
               showToast("Morning Bloom Unlocked");
             } else if (game.collectedCoins % 25 === 0) {
@@ -1296,14 +1486,34 @@
 
       function checkEnemyHits() {
         const p = game.player;
-        for (const s of game.blueSnails) {
-          if (rectsOverlap(p.x + 4, p.y + 6, p.w - 8, p.h - 8, s.x, s.y, s.w, s.h)) {
-            killPlayer();
-            return;
+        const all = game.blueSnails.concat(game.redSnails);
+        for (const s of all) {
+          if (!s.alive) {
+            continue;
           }
-        }
-        for (const s of game.redSnails) {
-          if (rectsOverlap(p.x + 4, p.y + 4, p.w - 8, p.h - 8, s.x - 6, s.y - 4, s.w + 12, s.h + 8)) {
+          if (!playerHitsSnail(p, s)) {
+            continue;
+          }
+
+          const prevBottom = p.prevY + p.h;
+          const currBottom = p.y + p.h;
+          const descending = p.prevVy > 120 || p.vy > 120;
+          const topTouch = prevBottom <= s.y + 6 && currBottom >= s.y - 2;
+          const centerX = p.x + p.w * 0.5;
+          const overShell = centerX >= s.x + s.w * 0.14 && centerX <= s.x + s.w * 0.9;
+
+          if (descending && topTouch && overShell) {
+            s.alive = false;
+            s.flattenT = 0.42;
+            s.vx = 0;
+            p.y = Math.min(p.y, s.y - p.h);
+            p.vy = -WORLD.jumpSpeed * 0.42;
+            p.onGround = false;
+            p.coyote = 0;
+            p.stretch = Math.max(p.stretch, 0.8);
+            burstImpact(s.x + s.w * 0.55, s.y + s.h * 0.5, "goal");
+            shake(2.4, 0.1);
+          } else {
             killPlayer();
             return;
           }
@@ -1316,7 +1526,7 @@
         if (!g || g.reached) {
           return;
         }
-        if (rectsOverlap(p.x, p.y, p.w, p.h, g.x - 5, g.y, g.w + 10, g.h)) {
+        if (playerHitsRect(p, g.x - 5, g.y, g.w + 10, g.h)) {
           g.reached = true;
           winGame();
         }
@@ -1342,7 +1552,7 @@
         }
 
         game.elapsed += dt;
-        game.skyLerp = clamp(game.skyLerp + (game.collectedCoins >= 100 ? dt / 3.2 : -dt / 2.2), 0, 1);
+        game.skyLerp = clamp(game.skyLerp + (game.collectedCoins >= DAWN_COINS ? dt / 3.2 : -dt / 2.2), 0, 1);
         game.brightness = lerp(1, 1.2, game.skyLerp);
 
         updatePlayer(dt);
@@ -1588,7 +1798,8 @@
         const x = toScreenX(s.x);
         const y = toScreenY(s.y);
         const w = s.w * scale;
-        const h = s.h * scale;
+        const flatten = s.alive ? 0 : clamp(1 - s.flattenT / 0.42, 0, 1);
+        const h = s.h * scale * (1 - flatten * 0.62);
         if (x + w < -60 || x > viewW + 60) {
           return;
         }
@@ -1596,27 +1807,28 @@
         const isRed = s.color === "red";
         const shell = isRed ? "rgba(209, 46, 61, 0.97)" : "rgba(69, 125, 241, 0.96)";
         const body = isRed ? "rgba(34, 12, 16, 0.98)" : "rgba(16, 19, 30, 0.98)";
-        const bob = Math.sin(s.phase) * 1.5 * scale;
+        const bob = s.alive ? Math.sin(s.phase) * 1.5 * scale : 0;
+        const drawY = y + s.baseH * scale - h;
 
         ctx.fillStyle = body;
-        roundRect(ctx, x + 0.12 * w, y + 0.5 * h, 0.82 * w, 0.4 * h, 8 * scale);
+        roundRect(ctx, x + 0.12 * w, drawY + 0.56 * h, 0.82 * w, 0.38 * h, 8 * scale);
         ctx.fill();
 
         ctx.fillStyle = shell;
         ctx.beginPath();
-        ctx.ellipse(x + 0.58 * w, y + 0.48 * h + bob, 0.34 * w, 0.32 * h, 0, 0, Math.PI * 2);
+        ctx.ellipse(x + 0.58 * w, drawY + 0.44 * h + bob, 0.34 * w, Math.max(2 * scale, 0.32 * h), 0, 0, Math.PI * 2);
         ctx.fill();
 
-        if (!PERF.lowPower) {
+        if (!PERF.lowPower && s.alive) {
           ctx.strokeStyle = "rgba(255,255,255,0.28)";
           ctx.lineWidth = 1.4 * scale;
           ctx.beginPath();
-          ctx.arc(x + 0.58 * w, y + 0.48 * h + bob, 0.18 * w, 0.5, Math.PI * 2.18);
+          ctx.arc(x + 0.58 * w, drawY + 0.44 * h + bob, 0.18 * w, 0.5, Math.PI * 2.18);
           ctx.stroke();
 
           ctx.fillStyle = "rgba(255,255,255,0.06)";
           ctx.beginPath();
-          ctx.ellipse(x + 0.64 * w, y + 0.38 * h + bob, 0.1 * w, 0.07 * h, -0.35, 0, Math.PI * 2);
+          ctx.ellipse(x + 0.64 * w, drawY + 0.34 * h + bob, 0.1 * w, 0.07 * h, -0.35, 0, Math.PI * 2);
           ctx.fill();
         }
       }
@@ -1648,50 +1860,77 @@
 
       function drawPlayer() {
         const p = game.player;
-        const x = toScreenX(p.x);
-        const y = toScreenY(p.y);
-        const w = p.w * scale;
-        const h = p.h * scale;
-        const f = p.face || 1;
+        const pose = getPlayerPose(p);
+        const x = toScreenX(pose.x);
+        const y = toScreenY(pose.y);
+        const w = pose.w * scale;
+        const h = pose.h * scale;
+        const f = pose.f;
 
-        const runStrength = clamp(Math.abs(p.vx) / PLAYER.runSpeeds.fast, 0, 1);
+        const runStrength = pose.runStrength;
         const squash = 1 - p.squash * 0.14 + p.stretch * 0.07;
         const stretch = 1 + p.stretch * 0.12 - p.squash * 0.05;
-        const phase = (game.elapsed * (Math.abs(p.vx) > 8 ? 12 : 0)) % (Math.PI * 2);
-        const legSwing = Math.sin(phase) * (0.18 + runStrength * 0.08);
-        const armSwing = Math.sin(phase + Math.PI) * (0.16 + runStrength * 0.06);
+        const stride = (0.14 + runStrength * 0.16) * Math.sin(pose.phase);
+        const armStride = (0.1 + runStrength * 0.11) * Math.sin(pose.phase + Math.PI);
+        const torsoTilt = (runStrength > 0.02 ? 0.16 : 0.06) * f * runStrength;
+        const bounce = pose.bounce * scale;
+
+        const hipX = x + w * 0.5;
+        const hipY = y + h * 0.63 + bounce;
+        const chestX = x + w * 0.51 + torsoTilt * w;
+        const chestY = y + h * 0.41 + bounce;
+        const neckX = x + w * 0.53 + torsoTilt * w * 1.2;
+        const neckY = y + h * 0.25 + bounce;
+        const headX = x + w * 0.54 + f * w * 0.03 + torsoTilt * w;
+        const headY = y + h * 0.14 + bounce;
+
+        const lFootX = hipX - w * 0.13 + stride * w * 0.85;
+        const rFootX = hipX + w * 0.13 - stride * w * 0.85;
+        const kneeLift = h * 0.06;
+        const lFootY = y + h * 0.95 - Math.max(0, stride) * kneeLift;
+        const rFootY = y + h * 0.95 - Math.max(0, -stride) * kneeLift;
+        const shoulderX = x + w * 0.51 + torsoTilt * w * 0.8;
+        const shoulderY = y + h * 0.35 + bounce;
+        const armLen = h * 0.24;
+        const lHandX = shoulderX - w * 0.16 + armStride * w * 0.8;
+        const rHandX = shoulderX + w * 0.16 - armStride * w * 0.8;
+        const lHandY = shoulderY + armLen * (0.8 + Math.max(0, armStride));
+        const rHandY = shoulderY + armLen * (0.8 + Math.max(0, -armStride));
 
         ctx.save();
         ctx.translate(x + w * 0.5, y + h * 0.92);
         ctx.scale(stretch, squash);
         ctx.translate(-(x + w * 0.5), -(y + h * 0.92));
 
-        ctx.fillStyle = `rgba(142, 209, 255, ${(0.05 + game.skyLerp * 0.12 + game.tierFlash * 0.06).toFixed(3)})`;
+        drawSegmentedLimb(hipX - w * 0.07, hipY - 1, lFootX, lFootY, w * 0.09, "rgba(5, 6, 10, 0.97)");
+        drawSegmentedLimb(hipX + w * 0.07, hipY - 1, rFootX, rFootY, w * 0.09, "rgba(5, 6, 10, 0.97)");
+        drawSegmentedLimb(shoulderX - w * 0.08, shoulderY, lHandX, lHandY, w * 0.07, "rgba(5, 6, 10, 0.97)");
+        drawSegmentedLimb(shoulderX + w * 0.08, shoulderY, rHandX, rHandY, w * 0.07, "rgba(5, 6, 10, 0.97)");
+
+        const torsoGrad = ctx.createLinearGradient(chestX, neckY, hipX, hipY + h * 0.1);
+        torsoGrad.addColorStop(0, "rgba(8, 10, 16, 0.99)");
+        torsoGrad.addColorStop(1, "rgba(4, 5, 9, 0.98)");
+        ctx.strokeStyle = torsoGrad;
+        ctx.lineWidth = w * 0.34;
+        ctx.lineCap = "round";
         ctx.beginPath();
-        ctx.ellipse(x + w * 0.5, y + h * 0.42, w * 0.85, h * 0.78, 0, 0, Math.PI * 2);
+        ctx.moveTo(neckX, neckY);
+        ctx.quadraticCurveTo(chestX, chestY, hipX, hipY);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(5, 6, 10, 0.98)";
+        ctx.beginPath();
+        ctx.arc(headX, headY, w * 0.17, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = "rgba(5, 6, 10, 0.96)";
         ctx.beginPath();
-        ctx.arc(x + w * 0.51 + f * w * 0.07, y + h * 0.16, h * 0.118, 0, Math.PI * 2);
+        ctx.ellipse(headX - f * w * 0.14, headY, w * 0.11, h * 0.055, -f * 0.52, 0, Math.PI * 2);
         ctx.fill();
 
+        ctx.fillStyle = "rgba(214, 232, 255, 0.13)";
         ctx.beginPath();
-        ctx.ellipse(x + w * 0.47 - f * w * 0.18, y + h * 0.17, w * 0.14, h * 0.07, -f * 0.4, 0, Math.PI * 2);
+        ctx.ellipse(headX + f * w * 0.05, headY - h * 0.03, w * 0.05, h * 0.028, 0, 0, Math.PI * 2);
         ctx.fill();
-
-        ctx.beginPath();
-        ctx.moveTo(x + w * 0.41, y + h * 0.26);
-        ctx.lineTo(x + w * 0.6, y + h * 0.26);
-        ctx.bezierCurveTo(x + w * 0.6 + f * w * 0.05, y + h * 0.4, x + w * 0.66, y + h * 0.5, x + w * 0.65, y + h * 0.63);
-        ctx.lineTo(x + w * 0.35, y + h * 0.63);
-        ctx.bezierCurveTo(x + w * 0.35 - f * w * 0.05, y + h * 0.5, x + w * 0.4, y + h * 0.4, x + w * 0.41, y + h * 0.26);
-        ctx.fill();
-
-        drawLimb(x + w * 0.41, y + h * 0.63, h * 0.26, legSwing, 3.8 * scale);
-        drawLimb(x + w * 0.59, y + h * 0.63, h * 0.26, -legSwing, 3.8 * scale);
-        drawLimb(x + w * 0.38, y + h * 0.39, h * 0.22, armSwing, 3 * scale);
-        drawLimb(x + w * 0.63, y + h * 0.39, h * 0.22, -armSwing, 3 * scale);
 
         const scarfY = y + h * 0.29 + Math.sin(game.elapsed * 13) * scale * 0.25;
         ctx.strokeStyle = `rgba(255, 139, 173, ${(0.44 + runStrength * 0.18).toFixed(3)})`;
@@ -1704,7 +1943,7 @@
 
         ctx.strokeStyle = `rgba(214, 232, 255, ${(0.1 + game.skyLerp * 0.18 + game.tierFlash * 0.1).toFixed(3)})`;
         ctx.lineWidth = 1.2 * scale;
-        ctx.strokeRect(x + 0.8, y + 0.8, w - 1.6, h - 1.6);
+        ctx.strokeRect(x + w * 0.2, y + h * 0.05, w * 0.58, h * 0.9);
         ctx.restore();
 
         ctx.fillStyle = `rgba(0, 0, 0, ${lerp(0.28, 0.18, game.skyLerp).toFixed(3)})`;
@@ -1713,18 +1952,16 @@
         ctx.fill();
       }
 
-      function drawLimb(ox, oy, len, ang, lw) {
-        const dx = Math.sin(ang) * len * 0.72;
-        const dy = Math.cos(ang) * len;
-        ctx.strokeStyle = "rgba(5, 6, 10, 0.96)";
+      function drawSegmentedLimb(ax, ay, bx, by, lw, color) {
+        const mx = (ax + bx) * 0.5;
+        const my = (ay + by) * 0.5 - Math.abs(bx - ax) * 0.12;
+        ctx.strokeStyle = color;
         ctx.lineWidth = lw;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.beginPath();
-        ctx.moveTo(ox, oy);
-        const midX = ox + dx * 0.52 + Math.cos(ang) * len * 0.15;
-        const midY = oy + dy * 0.5 + Math.sin(ang) * len * 0.15;
-        ctx.quadraticCurveTo(midX, midY, ox + dx, oy + dy);
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
         ctx.stroke();
       }
 
@@ -1855,57 +2092,64 @@
         }
       }
 
-      function pointerFromEvent(e) {
-        const t = e.changedTouches ? e.changedTouches[0] : e;
-        return { x: t.clientX, y: t.clientY, id: t.identifier ?? "mouse" };
+      function pointersFromEvent(e) {
+        if (e.changedTouches) {
+          return Array.from(e.changedTouches).map((t) => ({
+            x: t.clientX,
+            y: t.clientY,
+            id: t.identifier
+          }));
+        }
+        return [{ x: e.clientX, y: e.clientY, id: "mouse" }];
       }
 
       function onPointerDown(e) {
         if (e.cancelable) {
           e.preventDefault();
         }
-        const p = pointerFromEvent(e);
-        game.touch.activeId = p.id;
-        game.touch.startX = p.x;
-        game.touch.startY = p.y;
-        game.touch.x = p.x;
-        game.touch.y = p.y;
-        game.touch.startTime = performance.now();
-        game.touch.jumpArmed = true;
+        const pointers = pointersFromEvent(e);
+        const split = viewW * 0.5;
+        for (const p of pointers) {
+          if (game.mode !== "running") {
+            if (game.touch.rightId == null) {
+              game.touch.rightId = p.id;
+              game.touch.rightStartY = p.y;
+            }
+            continue;
+          }
+
+          if (p.x < split) {
+            if (game.touch.leftId == null) {
+              game.touch.leftId = p.id;
+              game.touch.leftStartX = p.x;
+              game.touch.leftX = p.x;
+            }
+          } else if (game.touch.rightId == null) {
+            game.touch.rightId = p.id;
+            game.touch.rightStartY = p.y;
+            queueJump();
+          }
+        }
       }
 
       function onPointerMove(e) {
         if (e.cancelable) {
           e.preventDefault();
         }
-        if (game.touch.activeId == null) {
+        if (game.touch.leftId == null || game.mode !== "running") {
           return;
         }
 
-        const touches = e.changedTouches ? Array.from(e.changedTouches) : [e];
-        let t = null;
-        for (const cur of touches) {
-          const id = cur.identifier ?? "mouse";
-          if (id === game.touch.activeId) {
-            t = cur;
-            break;
+        const pointers = pointersFromEvent(e);
+        for (const p of pointers) {
+          if (p.id !== game.touch.leftId) {
+            continue;
           }
-        }
-        if (!t) {
-          return;
-        }
-
-        game.touch.x = t.clientX;
-        game.touch.y = t.clientY;
-
-        const dx = game.touch.x - game.touch.startX;
-        const threshold = Math.max(20, 26 * scale);
-        game.input.left = dx < -threshold;
-        game.input.right = dx > threshold;
-
-        if (game.touch.startY - game.touch.y > Math.max(36, 34 * scale) && game.touch.jumpArmed) {
-          queueJump();
-          game.touch.jumpArmed = false;
+          game.touch.leftX = p.x;
+          const dx = game.touch.leftX - game.touch.leftStartX;
+          const threshold = Math.max(16, 20 * scale);
+          game.input.left = dx < -threshold;
+          game.input.right = dx > threshold;
         }
       }
 
@@ -1913,31 +2157,30 @@
         if (e.cancelable) {
           e.preventDefault();
         }
-        if (game.touch.activeId == null) {
-          return;
-        }
-
-        const p = pointerFromEvent(e);
-        if (p.id !== game.touch.activeId) {
-          return;
-        }
-
-        const dx = p.x - game.touch.startX;
-        const dy = p.y - game.touch.startY;
-
-        if (game.mode !== "running") {
-          if (dy > 65 && Math.abs(dy) > Math.abs(dx)) {
-            game.input.wantRestartNew = true;
-          } else {
-            game.input.wantRestartSame = true;
+        const pointers = pointersFromEvent(e);
+        for (const p of pointers) {
+          if (game.mode !== "running") {
+            if (p.id === game.touch.rightId) {
+              const dy = p.y - game.touch.rightStartY;
+              if (dy > 65) {
+                game.input.wantRestartNew = true;
+              } else {
+                game.input.wantRestartSame = true;
+              }
+              game.touch.rightId = null;
+            }
+            continue;
           }
-        } else if (dy < -50 && Math.abs(dy) > Math.abs(dx)) {
-          queueJump();
-        }
 
-        game.input.left = false;
-        game.input.right = false;
-        game.touch.activeId = null;
+          if (p.id === game.touch.leftId) {
+            game.touch.leftId = null;
+            game.input.left = false;
+            game.input.right = false;
+          }
+          if (p.id === game.touch.rightId) {
+            game.touch.rightId = null;
+          }
+        }
       }
 
       function attachInput() {
@@ -1985,10 +2228,10 @@
           "Silhouette Run",
           `
             <div class="overlay-stack">
-              <p>Reach the rightmost gate, collect hidden coins as they reveal nearby, and brighten the sky once you cross 100.</p>
+              <p>Reach the rightmost gate, collect hidden coins as they reveal nearby, and brighten the sky once you cross 50.</p>
               <div class="overlay-meta">
-                <div class="overlay-chip"><strong>Move</strong><br>A / D or drag</div>
-                <div class="overlay-chip"><strong>Jump</strong><br>Space / W or swipe up</div>
+                <div class="overlay-chip"><strong>Move</strong><br>A / D or left-half swipe</div>
+                <div class="overlay-chip"><strong>Jump</strong><br>Space / W or right-half tap</div>
                 <div class="overlay-chip"><strong>Restart</strong><br>Tap / Space, swipe down for new seed</div>
               </div>
               <div class="overlay-actions">
